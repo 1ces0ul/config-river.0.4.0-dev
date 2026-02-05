@@ -1,6 +1,7 @@
 # -river.0.4.0-dev
 A non-monolithic Wayland compositor
 
+
 Tips: 如果发现某些脚本类型的文件中的功能没反应，回头查看脚本是否有用户的执行权限，没有就打开终端输入命令 `chmod +x 脚本文件的绝对路径`
 
 
