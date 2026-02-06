@@ -1,5 +1,36 @@
+# ============================================================
+# 1. 常量与环境路径 (单一事实来源)
+# ============================================================
+(def- home (os/getenv "HOME"))
+
+(def paths {
+  :waybar-conf (string home "/.config/river/statusbar/waybar/config.json")
+  :waybar-css  (string home "/.config/river/statusbar/waybar/river_style.css")
+  :wallpaper   (string home "/.config/river/wallpapers/blackhole.gif")
+  :dunst-conf  (string home "/.config/dunst/dunstrc")
+})
+
+# ============================================================
+# 2. 核心工具函数 (通知、重载与容错)
+# ============================================================
+
+# [桌面通知]
+(defn- notify [msg &opt title level]
+  (default title "Rijan 系统")
+  (default level "normal")
+  (os/spawn ["notify-send" "-a" "Rijan" "-u" level title msg] :p))
+
+# [Waybar 启动指令定义]
+(def waybar-cmd (string "waybar -c " (paths :waybar-conf) " -s " (paths :waybar-css)))
+
+# ============================================================
+# 3. 按键绑定 (声明式逻辑)
+# ============================================================
 (array/push
   (config :xkb-bindings)
+  # --- Waybar Toggle (最优解：信号隐藏 || 失败救活)
+  [:b {:mod4 true :shift true} (action/spawn ["sh" "-c" (string "pkill -USR1 waybar || " waybar-cmd " &")])]
+  [:r {:mod4 true :shift true} (action/spawn (fn [& _] (reload-config)))]
   [:XF86MonBrightnessUp {} (action/spawn ["brightnessctl" "set" "10%+"])]
   [:XF86MonBrightnessDown {} (action/spawn ["brightnessctl" "set" "10%-"])]
   [:XF86AudioRaiseVolume {} (action/spawn ["wpctl" "set-volume" "@DEFAULT_AUDIO_SINK@" "5%+" "-l" "1"])]
@@ -27,15 +58,37 @@
   [:Escape {:mod4 true :mod1 true :shift true :ctrl true} (action/passthrough)]
   [:0 {:mod4 true} (action/focus-all-tags)])
 
+# [工作区 1-10 自动化循环生成]
 (for i 1 10
-  (def keysym (keyword i))
-  (array/push
-    (config :xkb-bindings)
-    [keysym {:mod4 true} (action/focus-tag i)]
-    [keysym {:mod4 true :mod1 true} (action/set-tag i)]
-    [keysym {:mod4 true :mod1 true :shift true} (action/toggle-tag i)]))
+  (let [tag (keyword i)]
+    (array/push (config :xkb-bindings)
+      [tag {:mod4 true} (action/focus-tag i)]
+      [tag {:mod4 true :mod1 true} (action/set-tag i)]
+      [tag {:mod4 true :mod1 true :shift true} (action/toggle-tag i)])))
 
 (array/push
   (config :pointer-bindings)
   [:left {:mod4 :true} (action/pointer-move)]
   [:right {:mod4 :true} (action/pointer-resize)])
+# ============================================================
+# 4. 幂等性自启动序列 (防止重复进程)
+# ============================================================
+
+# A. 输入法 (fcitx5)
+(os/spawn ["sh" "-c" "pgrep -x fcitx5 > /dev/null || fcitx5 -d"] :p)
+
+# B. 通知守护 (Dunst): 显式指定路径启动
+(os/spawn ["sh" "-c" (string "pgrep -x dunst > /dev/null || dunst -config " (paths :dunst-conf) " &")] :p)
+
+# C. 壁纸 (swww): 利用 Systemd 守护 + 初始着色
+# 逻辑：启动服务 -> 等待 daemon 握手 -> 刷入图片
+(os/spawn ["sh" "-c" (string 
+  "systemctl --user start swww.service && "
+  "sleep 0.5 && "
+  "swww img " (paths :wallpaper))] :p)
+
+# D. 状态栏 (Waybar): 初始启动
+(os/spawn ["sh" "-c" (string "pgrep -x waybar > /dev/null || " waybar-cmd " &")] :p)
+
+# [初始化完成通知]
+(notify "所有服务已就绪" "Rijan 启动完成")
