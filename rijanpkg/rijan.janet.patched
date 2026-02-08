@@ -1,4 +1,3 @@
-
 (import protocols)
 (import wayland)
 (import spork/netrepl)
@@ -36,9 +35,14 @@
               :outer-padding 4
               :inner-padding 4
               :main-ratio 0.60
+# 这里的列表仅作为默认值，用户可以在配置中通过 (merge-into config {:csd-list [...]}) 覆盖
+              :csd-list ["wechat" "wemeetapp" "google-chrome"]
+              :floating-list ["moments" "notification" "picture-in-picture"] # 增加浮动关键字白名单
+              :default-float-ratio 0.5 # 如果没尺寸，默认占屏幕 50%
               :xkb-bindings @[]
               :pointer-bindings @[]
-              :window-rules @{:app-id @{} :title @{}})
+              :window-rules @[]})
+
 (merge-into config light)
 
 (def wm @{:config config
@@ -49,32 +53,31 @@
           # The last window in the array is rendered on top.
           :render-order @[]})
 
-(defn- match-rule? [window key-type rule-action]
-  (let [val (string/ascii-lower (or (window key-type) ""))
-        # 从 config 查找对应的规则列表，例如 [:app-id "float"]
-        patterns (get-in (wm :config) [:window-rules key-type (keyword rule-action)] [])]
-    (some (fn [p] (string/find (string/ascii-lower p) val)) patterns)))
-
-# 判定窗口是否自绘 (CSD)
-(defn- window/can-self-draw? [window]
-  (or (= (window :decoration-hint) :client-side)
-      (match-rule? window :app-id "csd")
-      (match-rule? window :title "csd")
-      # 经验保底：有父窗口且自带尺寸的对话框
-      (and (window :parent) (window :w))))
-
-# 判定窗口意图 (Float or Tiled)
 (defn- window/analyze-intent [window]
   (if-not (nil? (window :float)) (break (window :float)))
-  (let [title (or (window :title) "")
-        # 第一保险：init.janet 规则
-        rule-float (or (match-rule? window :app-id "float")
-                       (match-rule? window :title "float"))
-        # 第二保险：通用逻辑判定 (WeChat 朋友圈、固定尺寸窗口等)
-        is-moments (or (string/find "朋友圈" title) (string/find "Moments" title))
+  (let [app-id (string/ascii-lower (or (window :app-id) ""))
+        title (string/ascii-lower (or (window :title) "")) # 获取窗口标题
+        parent (window :parent)
         is-fixed (and (window :min-w) (> (window :min-w) 0)
-                      (= (window :min-w) (window :max-w)))]
-    (or rule-float is-moments (not (nil? (window :parent))) is-fixed)))
+                      (= (window :min-w) (window :max-w))
+                      (= (window :min-h) (window :max-h)))
+        # 从配置中读取浮动关键字白名单
+        float-list (get (wm :config) :floating-list [])
+        matches-keyword (some |(or (string/find $ app-id) (string/find $ title)) float-list)]
+
+    (or (not (nil? parent)) is-fixed matches-keyword)))
+
+(defn- window/can-self-draw? [window]
+  (cond
+    # 1. 协议显式提示
+    (= (window :decoration-hint) :client-side) true
+    # 2. 从动态配置中检查白名单 (不再写死)
+    (let [app-id (string/ascii-lower (or (window :app-id) ""))
+          csd-list (get (wm :config) :csd-list [])]
+      (if (some |(string/find $ app-id) csd-list) (break true)))
+    # 3. 经验逻辑：有父窗口且有初始尺寸
+    (and (window :parent) (window :w)) true
+    false))
 
 (def registry @{})
 
@@ -223,33 +226,32 @@
 
 (defn window/manage [window]
   (let [f (window/analyze-intent window)
-        csd (window/can-self-draw? window)
-        title (or (window :title) "")
-        app-id (or (window :app-id) "")]
-    
+        csd (window/can-self-draw? window)]
     (put window :is-csd csd)
     (window/set-float window f)
+    
     (unless csd (:use-ssd (window :obj)))
 
     (if f
       (do
         (if-let [p (window :parent)] (put window :tag (p :tag)))
-        
-        # 精准定位逻辑
-        # 只有“正式窗口”（有标题或符合规则）才居中
-        # 无标题无ID的临时窗口（点赞菜单）保持其原始坐标
-        (let [is-formal (or (not= title "") (not= app-id "") (match-rule? window :title "float"))]
-          (when (and (window :new) (not (window :x)) is-formal)
-            (when-let [seat (first (wm :seats))
-                       out (seat :focused-output)]
-              (let [[cx cy] (get-center-box (out :w) (out :h) (or (window :w) 800) (or (window :h) 600) (out :x) (out :y))]
-                (window/set-position window cx cy)))))
-        
-        # 尺寸放权：告知客户端“我接受你的初始尺寸”，解决拉伸
+        # 改进的坐标和尺寸逻辑
+        (when (and (window :new) (not (window :x)))
+          (when-let [seat (first (wm :seats))
+                     out (seat :focused-output)]
+            (let [cfg (wm :config)
+                  # 核心改进：优先取窗口原有 w/h，否则按比例计算兜底值
+                  req-w (or (window :w) (math/floor (* (out :w) (get cfg :default-float-ratio 0.5))))
+                  req-h (or (window :h) (math/floor (* (out :h) (get cfg :default-float-ratio 0.5))))
+                  [cx cy] (get-center-box (out :w) (out :h) req-w req-h (out :x) (out :y))]
+              (window/set-position window cx cy))))
+
+        # 关键：告诉客户端，我（合成器）没有强制尺寸，你自己看着办
         (:propose-dimensions (window :obj) 0 0))
-      
-      # Tiling logic...
-      )))
+      (when (window :new)
+        (when-let [seat (first (wm :seats))
+                   output (seat :focused-output)]
+          (put window :tag (or (min-of (keys (output :tags))) 1)))))))
 
 (defn window/manage-finish [window]
   (put window :new nil)
@@ -690,21 +692,9 @@
       (unless (= other binding)
         (request (other :obj))))))
 
-(defn window-rule [key-type action pattern]
-  (let [k (keyword key-type)
-        act (keyword action)
-        # 确保路径存在
-        _ (unless (get-in config [:window-rules k act])
-            (put-in config [:window-rules k act] @[]))
-        rules (get-in config [:window-rules k act])]
-    (array/push rules pattern)))
-
-# 将函数注入 REPL 环境，这样 init.janet 就能调用了
-(def repl-env (merge (curenv) @{"window-rule" window-rule}))
-
 # Only main is marshaled when building a standalone executable,
 # so we must capture the REPL environment outside of main.
-#(def repl-env (curenv))
+(def repl-env (curenv))
 (defn repl-server-create []
   (def path (string/format "%s/rijan-%s"
                            (assert (os/getenv "XDG_RUNTIME_DIR"))
