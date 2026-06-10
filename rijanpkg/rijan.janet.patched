@@ -12,7 +12,9 @@
     :custom-protocols (map |(string protocols/river-protocols $)
                            ["/river-window-management-v1.xml"
                             "/river-layer-shell-v1.xml"
-                            "/river-xkb-bindings-v1.xml"])))
+                            "/river-xkb-bindings-v1.xml"
+                            "/river-input-management-v1.xml"
+                            "/river-libinput-config-v1.xml"])))
 
 (def required-interfaces
   @{"wl_compositor" 4
@@ -20,7 +22,8 @@
     "wp_single_pixel_buffer_manager_v1" 1
     "river_window_manager_v1" 4
     "river_layer_shell_v1" 1
-    "river_xkb_bindings_v1" 1})
+    "river_xkb_bindings_v1" 1
+    "river_libinput_config_v1" 1})
 
 # https://protesilaos.com/emacs/modus-themes-colors
 (def light @{:background 0xffffff
@@ -36,9 +39,14 @@
               :inner-padding 4
               :main-ratio 0.60
               :nmaster 1
+              :rules @[]
               :xkb-bindings @[]
               :pointer-bindings @[]})
 (merge-into config light)
+
+(def config-defaults @{})
+(eachp [k v] config
+  (put config-defaults k v))
 
 (def wm @{:config config
           :outputs @[]
@@ -216,6 +224,131 @@
   (:enable (binding :obj))
   (array/push (seat :xkb-bindings) binding))
 
+(defn- config/specified? [key]
+  (not (nil? ((wm :config) key))))
+
+(defn- libinput/enabled-state [enabled]
+  (if enabled :enabled :disabled))
+
+(defn- libinput/drag-lock-state [value]
+  (case value
+    true :enabled-timeout
+    false :disabled
+    value))
+
+(defn- libinput/three-finger-drag-state [value]
+  (case value
+    true :enabled-3fg
+    false :disabled
+    value))
+
+(defn- libinput/enum-bit [kind value]
+  (case kind
+    :send-events
+    (case value
+      :enabled 0
+      :disabled 1
+      :disabled-on-external-mouse 2
+      nil)
+    :click-method
+    (case value
+      :none 0
+      :button-areas 1
+      :clickfinger 2
+      nil)
+    :scroll-method
+    (case value
+      :no-scroll 0
+      :two-finger 1
+      :edge 2
+      :on-button-down 4
+      nil)
+    :accel-profile
+    (case value
+      :none 0
+      :flat 1
+      :adaptive 2
+      :custom 4
+      nil)
+    nil))
+
+(defn- libinput/supported? [supported kind value]
+  (when-let [bit (libinput/enum-bit kind value)]
+    (cond
+      (= bit 0) true
+      (number? supported) (not= 0 (band supported bit))
+      (or (struct? supported) (table? supported)) (if (supported value) true false)
+      false)))
+
+(defn libinput/handle-device [obj]
+  (defn handle-event [event]
+    (match event
+      [:send-events-support modes]
+      (when (and (config/specified? :send-events)
+                 (libinput/supported? modes :send-events ((wm :config) :send-events)))
+        (:set-send-events obj ((wm :config) :send-events)))
+      [:tap-support finger-count]
+      (when (> finger-count 0)
+        (when (config/specified? :tap-to-click)
+          (:set-tap obj (libinput/enabled-state ((wm :config) :tap-to-click))))
+        (when (config/specified? :tap-button-map)
+          (:set-tap-button-map obj ((wm :config) :tap-button-map)))
+        (when (config/specified? :tap-drag)
+          (:set-drag obj (libinput/enabled-state ((wm :config) :tap-drag))))
+        (when (config/specified? :tap-drag-lock)
+          (:set-drag-lock obj (libinput/drag-lock-state ((wm :config) :tap-drag-lock)))))
+      [:three-finger-drag-support finger-count]
+      (when (and (>= finger-count 3) (config/specified? :three-finger-drag))
+        (:set-three-finger-drag obj (libinput/three-finger-drag-state ((wm :config) :three-finger-drag))))
+      [:accel-profiles-support profiles]
+      (when (and (config/specified? :accel-profile)
+                 (libinput/supported? profiles :accel-profile ((wm :config) :accel-profile)))
+        (:set-accel-profile obj ((wm :config) :accel-profile)))
+      [:natural-scroll-support supported]
+      (when (and (not= supported 0) (config/specified? :natural-scroll))
+        (:set-natural-scroll obj (libinput/enabled-state ((wm :config) :natural-scroll))))
+      [:left-handed-support supported]
+      (when (and (not= supported 0) (config/specified? :left-handed))
+        (:set-left-handed obj (libinput/enabled-state ((wm :config) :left-handed))))
+      [:click-method-support methods]
+      (do
+        (when (and (config/specified? :click-method)
+                   (libinput/supported? methods :click-method ((wm :config) :click-method)))
+          (:set-click-method obj ((wm :config) :click-method)))
+        (when (and (config/specified? :clickfinger-button-map)
+                   (libinput/supported? methods :click-method :clickfinger))
+          (:set-clickfinger-button-map obj ((wm :config) :clickfinger-button-map))))
+      [:middle-emulation-support supported]
+      (when (and (not= supported 0) (config/specified? :middle-emulation))
+        (:set-middle-emulation obj (libinput/enabled-state ((wm :config) :middle-emulation))))
+      [:scroll-method-support methods]
+      (do
+        (when (and (config/specified? :scroll-method)
+                   (libinput/supported? methods :scroll-method ((wm :config) :scroll-method)))
+          (:set-scroll-method obj ((wm :config) :scroll-method)))
+        (when (and (config/specified? :scroll-button)
+                   (libinput/supported? methods :scroll-method :on-button-down))
+          (:set-scroll-button obj ((wm :config) :scroll-button)))
+        (when (and (config/specified? :scroll-button-lock)
+                   (libinput/supported? methods :scroll-method :on-button-down))
+          (:set-scroll-button-lock obj (libinput/enabled-state ((wm :config) :scroll-button-lock)))))
+      [:dwt-support supported]
+      (when (and (not= supported 0) (config/specified? :dwt))
+        (:set-dwt obj (libinput/enabled-state ((wm :config) :dwt))))
+      [:dwtp-support supported]
+      (when (and (not= supported 0) (config/specified? :dwtp))
+        (:set-dwtp obj (libinput/enabled-state ((wm :config) :dwtp))))
+      [:rotation-support supported]
+      (when (and (not= supported 0) (config/specified? :rotation))
+        (:set-rotation obj ((wm :config) :rotation)))
+      _ nil))
+  (:set-handler obj handle-event))
+
+(defn libinput/handle-event [event]
+  (match event
+    [:libinput-device obj] (libinput/handle-device obj)
+    _ nil))
+
 (defn seat/focus-output [seat output]
   (unless (= output (seat :focused-output))
     (put seat :focused-output output)
@@ -308,6 +441,42 @@
                     :start-w (window :w) :start-h (window :h)
                     :dx 0 :dy 0})))
 
+(defn- rule/value-matches? [pattern value]
+  (if (string/has-prefix? "~" pattern)
+    (string/find (string/slice pattern 1) (or value ""))
+    (= value pattern)))
+
+(defn window/apply-rules [window]
+  (each rule (config :rules)
+    (def [ok err] (protect
+      (do
+        (def [matcher value actions] rule)
+        (def match?
+          (case matcher
+            :app-id (rule/value-matches? value (window :app-id))
+            :title  (rule/value-matches? value (window :title))
+            false))
+        (when match?
+          (when-let [tag (actions :tag)]
+            (put window :tag tag))
+          (when (or (actions :float)
+                    (actions :sticky)
+                    (actions :fullscreen))
+            (put window :pending-rules actions))))))
+    (unless ok
+      (eprint "rule error: " err " rule: " rule))))
+
+(defn- window/center-on-output [window]
+  "Center window on the focused output's usable area, or fall back to 0,0."
+  (if-let [seat (first (wm :seats))
+           output (seat :focused-output)]
+    (let [usable (output/usable-area output)
+          bw2 (* 2 ((wm :config) :border-width))]
+      (window/set-position window
+                           (+ (usable :x) (div (- (usable :w) (window :w) bw2) 2))
+                           (+ (usable :y) (div (- (usable :h) (window :h) bw2) 2))))
+    (window/set-position window 0 0)))
+
 (defn window/manage-start [window]
  (if (window :closed)
   (do
@@ -357,7 +526,21 @@
           (window/set-float window false))
         (when-let [seat (first (wm :seats))
                    output (seat :focused-output)]
-          (put window :tag (or (min-of (keys (output :tags))) 1))))))
+          (put window :tag (or (min-of (keys (output :tags))) 1)))))
+    (unless (window :managed-as-child)
+      (window/apply-rules window)))
+  (when (and (window :pending-rules) (window :w))
+    (def r (window :pending-rules))
+    (put window :pending-rules nil)
+    (when (r :float)
+      (window/set-float window true)
+      (window/center-on-output window))
+    (when (r :sticky)
+      (put window :sticky true))
+    (when (r :fullscreen)
+      (when-let [output (or (window/tag-output window)
+                            (first (wm :outputs)))]
+        (window/set-fullscreen window output))))
   # Late-arriving parent: convert to child if parent appears after first cycle.
   (when (and (not (window :new))
              (window :parent)
@@ -392,17 +575,6 @@
                (= ($ :app-id) app-id)
                ($ :x) ($ :w))
           (wm :windows))))
-
-(defn- window/center-on-output [window]
-  "Center window on the focused output's usable area, or fall back to 0,0."
-  (if-let [seat (first (wm :seats))
-           output (seat :focused-output)]
-    (let [usable (output/usable-area output)
-          bw2 (* 2 ((wm :config) :border-width))]
-      (window/set-position window
-                           (+ (usable :x) (div (- (usable :w) (window :w) bw2) 2))
-                           (+ (usable :y) (div (- (usable :h) (window :h) bw2) 2))))
-    (window/set-position window 0 0)))
 
 (defn- set-borders [window status config]
   (def rgb (case status
@@ -474,11 +646,18 @@
 
 (defn- seat/init-bindings [seat]
   "Initialize key and pointer bindings for a new seat."
-  (when (seat :new)
+  (when (or (seat :new) (seat :reload))
+    (each binding (seat :xkb-bindings)
+      (:destroy (binding :obj)))
+    (each binding (seat :pointer-bindings)
+      (:destroy (binding :obj)))
+    (put seat :xkb-bindings @[])
+    (put seat :pointer-bindings @[])
     (each binding (config :xkb-bindings)
       (xkb-binding/create seat ;binding))
     (each binding (config :pointer-bindings)
-      (pointer-binding/create seat ;binding))))
+      (pointer-binding/create seat ;binding))
+    (put seat :reload nil)))
 
 (defn- seat/cleanup-stale-refs [seat]
   "Clear references to closed windows and removed outputs.
@@ -701,8 +880,9 @@
   (def focus-idx (or (index-of focused-window windows)
                      # focused window might be floating; find nearest tiled neighbor
                      0))
+  (def focused (get windows focus-idx))
   (def n (length windows))
-  (def master-w (math/round (* avail-w mfact)))
+  (def master-w (math/round (* avail-w (or (focused :ratio) mfact))))
   (def master-x
     (case location
       :center (div (- avail-w master-w) 2)
@@ -722,7 +902,8 @@
   (var left-hidden false)
   (for i 0 focus-idx
     (def wi (- focus-idx 1 i))
-    (def w (math/round (* avail-w mfact)))
+    (def window (get windows wi))
+    (def w (math/round (* avail-w (or (window :ratio) mfact))))
     (set x (- x inner))
     (if (or left-hidden (< x 0))
       (do (set left-hidden true)
@@ -736,7 +917,8 @@
   (var right-hidden false)
   (for i (+ focus-idx 1) n
     (set x (+ x inner))
-    (def w (math/round (* avail-w mfact)))
+    (def window (get windows i))
+    (def w (math/round (* avail-w (or (window :ratio) mfact))))
     (if (or right-hidden (>= x avail-w))
       (do (set right-hidden true)
           (put result i :hide))
@@ -749,6 +931,21 @@
           (let [[bx by bw bh] $]
             [(+ bx inner) (+ by inner) (- bw (* 2 inner)) (- bh (* 2 inner))]))
        result))
+
+(defn layout/monocle
+  "Monocle layout: every tiled window fills the focused output's usable area."
+  [windows usable cfg]
+  (when (empty? windows) (break @[]))
+  (def outer (cfg :outer-padding))
+  (def inner (cfg :inner-padding))
+  (def avail-w (max 0 (- (usable :w) (* 2 outer))))
+  (def avail-h (max 0 (- (usable :h) (* 2 outer))))
+  (def box [(+ (usable :x) outer inner)
+            (+ (usable :y) outer inner)
+            (- avail-w (* 2 inner))
+            (- avail-h (* 2 inner))])
+  (seq [i :range [0 (length windows)]]
+    box))
 
 (defn layout/grid
   "Grid layout."
@@ -813,6 +1010,7 @@
       :tile     (layout/master-stack windows usable cfg tile-location)
       :scroller (layout/scroller windows usable cfg focused-window)
       :grid     (layout/grid windows usable cfg)
+      :monocle  (layout/monocle windows usable cfg)
       # default: tile
       (layout/master-stack windows usable cfg tile-location)))
 
@@ -1052,7 +1250,7 @@
 # --- Pluggable layout actions ---
 
 (defn action/set-layout
-  "Switch layout on focused output. type: :tile :scroller :grid"
+  "Switch layout on focused output. type: :tile :scroller :grid :monocle"
   [layout-type]
   (fn [seat binding]
     (when-let [output (seat :focused-output)]
@@ -1120,6 +1318,16 @@
     (when-let [output (seat :focused-output)]
       (def cur (or (output :main-ratio) ((wm :config) :main-ratio)))
       (put output :main-ratio (max 0.1 (min 0.9 (+ cur delta)))))))
+
+(defn action/window-ratio [delta]
+  "Adjust focused tiled window ratio for scroller layout."
+  (fn [seat binding]
+    (when-let [window (seat :focused)]
+      (unless (window :float)
+        (def cur (or (window :ratio)
+                     ((wm :config) :scroller-mfact)
+                     ((wm :config) :main-ratio)))
+        (put window :ratio (max 0.1 (min 0.9 (+ cur delta))))))))
 
 (defn action/set-nmaster [delta]
   "Adjust nmaster count on focused output."
@@ -1202,6 +1410,67 @@
 # Only main is marshaled when building a standalone executable,
 # so we must capture the REPL environment outside of main.
 (def repl-env (curenv))
+
+(defn config/default-init-path []
+  (def config-dir (or (os/getenv "XDG_CONFIG_HOME")
+                      (string (os/getenv "HOME") "/.config")))
+  (string config-dir "/rijan/init.janet"))
+
+(defn- config/replace-with [source]
+  (def remove-keys @[])
+  (eachk k config
+    (unless (has-key? source k)
+      (array/push remove-keys k)))
+  (each k remove-keys
+    (put config k nil))
+  (eachp [k v] source
+    (put config k v)))
+
+(defn- config/snapshot []
+  (def snapshot @{})
+  (eachp [k v] config
+    (put snapshot k v))
+  snapshot)
+
+(defn- config/restore [snapshot]
+  (config/replace-with snapshot))
+
+(defn config/load [path reload?]
+  (def snapshot (config/snapshot))
+  (try
+    (do
+      (config/replace-with config-defaults)
+      (put config :init-path path)
+      (put config :reloading reload?)
+      (put config :xkb-bindings @[])
+      (put config :pointer-bindings @[])
+      (put config :rules @[])
+      (if-let [init (file/open path :r)]
+        (defer (file/close init)
+          (dofile init :env repl-env))
+        (when reload?
+          (errorf "init file not found: %s" path)))
+      (put config :reloading nil)
+      (when reload?
+        (each seat (wm :seats)
+          (put seat :reload true))
+        (ev/spawn
+          (os/proc-wait
+            (os/spawn ["notify-send" "-a" "Rijan" "Rijan 配置已重载" path] :p)))))
+    ([err]
+      (config/restore snapshot)
+      (put config :reloading nil)
+      (eprint "config reload error: " err)
+      (when reload?
+        (ev/spawn
+          (os/proc-wait
+            (os/spawn ["notify-send" "-a" "Rijan" "-u" "critical"
+                       "Rijan 配置错误" (string err)] :p)))))))
+
+(defn action/reload-config []
+  (fn [seat binding]
+    (config/load (or (config :init-path) (config/default-init-path)) true)))
+
 (defn repl-server-create []
   (def path (string/format "%s/rijan-%s"
                            (assert (os/getenv "XDG_RUNTIME_DIR"))
@@ -1216,12 +1485,9 @@
   # It only matters if it's set when the display is created.
   (os/setenv "WAYLAND_DEBUG" nil)
 
-  (def config-dir (or (os/getenv "XDG_CONFIG_HOME")
-                      (string (os/getenv "HOME") "/.config")))
-  (def init-path (get 1 args (string config-dir "/rijan/init.janet")))
-  (when-let [init (file/open init-path :r)]
-    (dofile init :env repl-env)
-    (file/close init))
+  (def init-path (get 1 args (config/default-init-path)))
+  (put config :init-path init-path)
+  (config/load init-path false)
 
   (put registry :obj (:get-registry display))
   (:set-handler (registry :obj) registry/handle-event)
@@ -1231,6 +1497,7 @@
       (errorf "wayland compositor does not support %s" i)))
 
   (:set-handler (registry "river_window_manager_v1") wm/handle-event)
+  (:set-handler (registry "river_libinput_config_v1") libinput/handle-event)
 
   # Do a roundtrip to give the compositor the chance to send the
   # :unavailable event before creating the repl server and potentially
