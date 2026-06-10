@@ -1,286 +1,534 @@
-# Rijan Window Manager – A Complete Beginner's Guide & Customization Tutorial
+# Rijan Window Manager Fork Guide
 
-> **What is Rijan?** Rijan is a tiling window manager written in Janet, designed to run on top of the River Wayland compositor. It offers a clean, scriptable, and runtime‑modifiable approach to window management. This guide covers both the basics and the advanced modifications made in this fork.
+Rijan 是一个运行在 River Wayland compositor 之上的 Janet 窗口管理器。River 负责 Wayland、输入、输出、协议和底层 compositor 工作；Rijan 负责窗口如何排列、聚焦、移动、切换、热重载和响应按键。
 
-> **🇨🇳 中文版：[Rijan 魔改详解](https://github.com/1ces0ul/linux-guides/blob/main/docs/rijan-fork-guide.md)**
+这个 fork 在原版 Rijan 的基础上加入了更完整的日用功能：多布局、libinput 配置、rules DSL、子窗口处理、waybar 焦点修复、热重载回滚、键盘控制浮动窗口，以及更稳的错误隔离。
 
-## Table of Contents
+## 当前文件
 
-- [Introduction: What is Rijan?](#introduction-what-is-rijan)
-- [Overview of Modified Rijan Features](#overview-of-modified-rijan-features)
-- [Source Code Walkthrough](#source-code-walkthrough)
-- [Getting Started](#getting-started)
-- [Daily Usage & Keybindings](#daily-usage--keybindings)
-- [Advanced: REPL Live Debugging](#advanced-repl-live-debugging)
-- [Deep Dive: Modification Details](#deep-dive-modification-details)
-- [Troubleshooting](#troubleshooting)
-- [Links](#links)
+- `rijan.janet.patched`：主窗口管理器源码。
+- `init.janet`：用户配置、按键绑定、自启动、输入设备配置。
+- `scripts/ensure-zig-0.15.sh`：Arch 下自动安装/降级 Zig 0.15 的辅助脚本。
+- `PKGBUILD`：打包构建文件，当前要求 Zig `>=0.15,<0.16`。
 
----
+## 构建要求
 
-## Introduction: What is Rijan?
-
-**River** is a Wayland compositor – it handles low‑level display, input, and protocol tasks. **Rijan** is the window manager that sits on top of River, deciding how windows are arranged, focused, and managed.
-
-The separation of compositor and window manager is a powerful design choice in the Wayland world. While most Wayland compositors (like Sway or Hyprland) have built‑in window management, River + Rijan let you rewrite the entire window‑management logic in a scripting language (Janet) without touching C or Zig. This makes Rijan highly programmable and hot‑reloadable.
-
-### Why This Fork?
-
-The original Rijan (by Isaac Freund) is an elegant, minimal window manager (~650 lines of Janet code). It works perfectly for a basic tiling setup, but for daily use it lacked several practical features. This fork adds three layout engines, robust child‑window handling, keyboard‑driven floating operations, better focus management, and many other improvements – all while staying true to the original clean architecture.
-
----
-
-## Overview of Modified Rijan Features
-
-| Area | Original Rijan | This Fork |
-|------|----------------|-----------|
-| **Layouts** | Single master‑stack (left) | 3 layouts: master‑stack (4 directions), scroller, grid; per‑output switching |
-| **Size Constraints** | None | Respects window min/max hints; centers and clips overflow |
-| **Child/Popup Windows** | Simple parent‑based floating | Handles XWayland client‑leader, logical‑parent matching, smart centering |
-| **Focus System** | Monolithic `seat/manage` | Split into 6 focused sub‑functions; focus‑return‑to‑parent after child closes |
-| **Sticky Windows** | Not supported | Toggle sticky (visible on all tags) |
-| **Floating Operations** | Mouse only | Keyboard move/resize/snap with edge collision |
-| **Window Swapping** | None | Swap focused window with next/prev tiled window |
-| **Multi‑Monitor** | One‑way `focus‑output` | Bidirectional focus/send‑to‑output |
-| **Nmaster** | Fixed at 1 | Configurable and dynamically adjustable |
-| **Error Tolerance** | None | `protect` wraps core loops; single‑window errors won’t break the whole WM |
-| **Background Management** | Single‑pixel‑buffer | Removed (use external tools like `swww` for animated wallpapers) |
-| **Code Size** | ~650 lines | ~1100 lines |
-
----
-
-## Source Code Walkthrough
-
-This fork is based on the original Rijan source from **Feb 5, 2026**. Two main source files are provided:
-
-- **`rijan.janet.patched` (latest)** – The main window‑manager file. It contains the upgraded window‑drawing logic and adds the `grid` and `scroller` layouts.
-- **`rijan.janet.ref` (reference)** – An earlier version that optimizes XWayland window‑drawing logic. Kept for reference.
-
-Both files have the background‑color code removed, making it easy to use tools like `swww` for animated wallpapers.
-
-**`init.janet`** is the configuration file that works with the latest `rijan.janet.patched`. It launches your status bar (`waybar`), notification daemon (`dunst`), input method (`fcitx5`), wallpaper (`swww`), and sets up all keybindings.
-
----
-
-## Getting Started
-
-### 1. Install Janet and Spork
+当前 Rijan 依赖的 Zig/Wayland Janet 包还没有适配 Zig 0.16，所以必须使用 Zig 0.15.x。
 
 ```bash
-# Install Janet (check your distribution’s package manager)
-# For Arch Linux:
-sudo pacman -S janet
-
-# Install the Spork library (needed for the REPL server)
-jpm install spork
+zig version
 ```
 
-### 2. Get the Source and Install
+如果显示 `0.16.x`，先执行：
 
 ```bash
-git clone https://github.com/1ces0ul/config-river.0.4.0-dev.git
-cd config-river.0.4.0-dev/rijanpkg
-makepkg -fsi
+./scripts/ensure-zig-0.15.sh
 ```
 
-This builds and installs the Rijan package. The PKGBUILD handles placing files in the correct locations.
-
-### 3. Configure `init.janet`
-
-The `init.janet` file is responsible for starting your desktop environment. Open it and adjust the paths to match your system:
-
-- **`waybar-conf`**, **`waybar-css`** – Point to your Waybar config and style files.
-- **`wallpaper`** – Path to your wallpaper (supports GIF for animated backgrounds via `swww`).
-- **`dunst-conf`** – Path to your Dunst configuration.
-
-The file also contains the keybinding definitions. You can modify them here.
-
-### 4. Launch River + Rijan
-
-From a TTY (or a display‑manager session that supports Wayland), run:
+然后构建：
 
 ```bash
-export XDG_CURRENT_DESKTOP=river
-exec river
+makepkg -Csf --holdver
 ```
 
-River will automatically load Rijan from `~/.config/rijan/` (or wherever you placed the files).
+说明：
 
-**Tip:** If you see a black screen after starting, check the **Troubleshooting** section below.
+- `-C`：清理旧 build 目录。
+- `-s`：自动安装缺失依赖。
+- `-f`：已有包时强制重新构建。
+- `--holdver`：不更新 git source 到最新 commit，使用当前固定版本。
 
----
+## 启动流程
 
-## Daily Usage & Keybindings
+River 启动后加载 Rijan。Rijan 启动时会读取：
 
-The default modifier key is **`Mod4`** (usually the Windows key).
-
-| Keybinding | Action |
-|------------|--------|
-| `Mod4 + t` | Open terminal (`kitty`) |
-| `Mod4 + b` | Open browser (`chromium`) |
-| `Mod4 + r` | Launch application launcher (`rofi`) |
-| `Mod4 + q` | Close focused window |
-| `Mod4 + space` | Zoom (swap focused window with master) |
-| `Mod4 + p` / `Mod4 + n` | Focus previous / next window |
-| `Mod4 + j` / `Mod4 + k` | Focus next / previous output (monitor) |
-| `Mod4 + f` | Toggle fullscreen |
-| `Mod4 + Alt + f` | Toggle floating |
-| `Mod4 + Shift + r` | Retile (reset all user‑floated windows) |
-| `Mod4 + 0` | Show all tags (workspaces) |
-| `Mod4 + 1` … `Mod4 + 9` | Switch to tag 1‑9 |
-| `Mod4 + Alt + 1` … `Mod4 + Alt + 9` | Move window to tag 1‑9 |
-| `Mod4 + Alt + Shift + 1` … `9` | Toggle tag 1‑9 on focused output |
-
-**Layout switching** (per output):
-
-- `Mod4 + Alt + t` → tile (master‑stack)
-- `Mod4 + Alt + s` → scroller
-- `Mod4 + Alt + g` → grid
-- `Mod4 + Alt + Tab` → switch to previous layout
-
-**Master‑stack direction** (when in tile layout):
-
-- `Mod4 + Alt + h` → left
-- `Mod4 + Alt + l` → right
-- `Mod4 + Alt + k` → top
-- `Mod4 + Alt + j` → bottom
-
-**Floating‑window keyboard controls**:
-
-- Move: `Mod4 + Ctrl + Shift + h/j/k/l`
-- Resize: `Mod4 + Alt + Shift + h/j/k/l`
-- Snap to edge: `Mod4 + Alt + Ctrl + h/j/k/l`
-
-**Mouse bindings**:
-
-- `Mod4 + left‑click` → drag window
-- `Mod4 + right‑click` → resize window
-
----
-
-## Advanced: REPL Live Debugging
-
-One of Rijan’s killer features is the built‑in REPL (Read‑Eval‑Print Loop). It lets you connect to the running window manager, inspect its state, and even modify behavior on the fly.
-
-### Connect to the REPL
-
-Make sure Rijan is running, then in a terminal:
-
-```bash
-janet -e "(import spork/netrepl) (netrepl/client :unix \"$XDG_RUNTIME_DIR/rijan-$WAYLAND_DISPLAY\")"
+```text
+~/.config/rijan/init.janet
 ```
 
-You’ll get a Janet prompt. Try evaluating some expressions:
+也可以通过启动参数传入自定义 init 路径。源码会把当前路径写进 `config :init-path`，所以之后按热重载快捷键仍然会重载同一个文件。
+
+## init.janet 的结构
+
+当前 `init.janet` 分为四段：
+
+1. 路径和常量
+2. 工具函数、输入设备、rules
+3. 按键绑定
+4. 首次启动序列
+
+路径统一从 `$HOME` 推导，不再硬编码 `/home/icesoul`：
 
 ```janet
-# Print the current window list
-(print (wm :windows))
+(def- home (os/getenv "HOME"))
 
-# Print the layout of each output
-(each output (wm :outputs) (print (output :layout)))
-
-# Reload the configuration (after editing init.janet)
-(load "init.janet")
+(def paths {
+  :waybar-conf   (string home "/.config/river/statusbar/waybar/config.json")
+  :waybar-css    (string home "/.config/river/statusbar/waybar/river_style.css")
+  :wallpaper     (string home "/.config/river/wallpapers/blackhole.gif")
+  :dunst-conf    (string home "/.config/dunst/dunstrc")
+  :mihomo-script (string home "/.config/river/scripts/mihomo_status.sh")
+  :volume-script (string home "/.config/river/scripts/volume-notify.sh")
+})
 ```
 
-### Exiting the REPL
+这样换机器、换用户名时不需要改绝对路径。
 
-- **`Ctrl+D`** – exits the REPL client, leaves Rijan running.
-- **`(quit)`** – exits the entire Rijan process (and returns you to River).
+## 热重载
 
----
+当前快捷键：
 
-## Deep Dive: Modification Details
+```text
+Mod4 + Shift + F5
+```
 
-### Layout Engines
+对应：
 
-- **Master‑Stack** – The classic dwm‑style layout. Master area can be placed left, right, top, or bottom. Number of master windows (`nmaster`) and master ratio are adjustable.
-- **Scroller** – Inspired by PaperWM/niri. The focused window stays centered; neighboring windows extend to the sides. Windows that would go off‑screen are hidden.
-- **Grid** – Automatically arranges windows in a grid, centering the last row.
+```janet
+(action/reload-config)
+```
 
-### Window Decoration (Border Fix)
+热重载现在有三个重要行为：
 
-**Problem:** All windows were appearing without any server-side rendered (SSD) borders.
-**Cause:** The `decoration_hint` values (e.g., `0, 1, 2, 3`) received from the `river_layout_manager_v1` protocol are automatically converted into Janet `keywords` (e.g., `:only-supports-csd`, `:prefers-csd`, `:prefers-ssd`, `:no-preference`) by the Wayland binding layer. However, Rijan’s `window/manage` and `window/render` functions were incorrectly comparing these `keyword` hints against `integers`. Since a keyword can never equal an integer, the border-drawing logic failed, preventing any borders from being drawn.
-**Fix:** The code was updated to compare `decoration-hint` values against their corresponding Janet `keywords` instead of `integers`. For example, `(= hint 0)` was changed to `(= hint :only-supports-csd)`. The default fallback hint was also changed from `3` to `:no-preference`.
+1. 先保存当前可用配置。
+2. 把 `config` 重置回源码默认值。
+3. 再重新执行 `init.janet`。
 
-**Decoration Hint Values (`river_layout_manager_v1`):**
+如果 `init.janet` 报错，会完整恢复旧配置，不会留下半坏状态。
 
-| Value | Meaning | Rijan Keyword | Typical Windows |
-|:------|:--------|:--------------|:----------------|
-| `0` | `only_supports_csd` | `:only-supports-csd` | Telegram, Chrome, X11 apps without MOTIF |
-| `1` | `prefers_csd` | `:prefers-csd` | WeChat (MOTIF `no_border`) |
-| `2` | `prefers_ssd` | `:prefers-ssd` | GTK4 apps, X11 apps requesting decoration |
-| `3` | `no_preference` | `:no-preference` | XDG toplevel only |
+这解决了一个旧问题：以前你从 `init.janet` 删除某个 `(put config :xxx ...)` 后，F5 热重载可能仍然保留旧值。现在不会，因为 reload 前会先回到默认配置。
 
-**Border Drawing Decision:**
+## 首次启动和热重载的区别
 
-| Window Type | Border? | Decoration Mode |
-|:------------|:--------|:----------------|
-| Child/Transient (`managed-as-child`) | ✗ No | None |
-| Independent toplevel + focused (hint 2/3) | ✓ Yes (focused color) | `use-ssd` |
-| Independent toplevel + unfocused (hint 2/3) | ✓ Yes (normal color) | `use-ssd` |
-| CSD window (hint 0/1) | ✗ No | `use-csd` |
-| Fullscreen | ✓ Yes* | `use-ssd` |
+`init.janet` 末尾的自启动段现在包在：
 
-\*Protocol hides borders when fullscreen.
+```janet
+(unless (config :reloading)
+  ...)
+```
 
-### Child‑Window Handling
+所以：
 
-XWayland popups (e.g., file dialogs, login windows) are tricky because of `WM_TRANSIENT_FOR` and client‑leader semantics. This fork adds:
+- 第一次登录启动 Rijan：会启动 waybar、dunst、fcitx5、壁纸、swayidle、gsettings。
+- 按 `Mod4+Shift+F5` 热重载：只重载 Rijan 配置，不重复跑这些登录初始化命令。
 
-- **`parent‑event‑received` flag** – distinguishes “no parent event” from “parent is nil (client‑leader)”.
-- **Logical‑parent matching** – when a real parent isn’t available, match by `app‑id` to guess the owner window.
-- **Smart centering** – child windows are centered over their parent’s content area (not the whole output).
-- **Focus‑return‑to‑parent** – when a child closes, focus goes back to its parent (if still alive).
+这是为了避免 F5 时重复启动或重置桌面环境。
 
-### Size Constraints (`clamp‑to‑hints`)
+## 自启动
 
-Some applications (terminals, image viewers) have fixed or bounded size hints. The layout now respects `min‑width`, `max‑width`, `min‑height`, `max‑height`. Windows are centered in their allocated layout box, and any overflow is clipped.
+首次启动会执行：
 
-### Error Tolerance
+- `dbus-update-activation-environment`
+- `fcitx5 -d`
+- `systemctl --user start awww.service`
+- `awww img <wallpaper>`
+- `waybar`
+- `dunst`
+- GTK/icon/cursor/color-scheme 的 `gsettings`
+- `swayidle`
 
-The core `wm/manage` and `wm/render` loops are wrapped with Janet’s `protect`. If a single window’s event handler throws an error (common with half‑initialized XWayland windows), the error is logged but the manage cycle continues. Your keybindings stay alive.
+`spawn-once` 用 `pgrep -x` 避免重复进程；`spawn-bg` 会把命令放后台执行，避免一个程序卡住拖死整个 init。
 
-### Background Removal
+## 输入设备配置
 
-The original Rijan used `single‑pixel‑buffer` to draw a solid background. That code has been removed, so you can use external wallpaper tools (`swww`, `swaybg`, etc.) without interference.
+当前启用：
 
----
+```janet
+(put config :tap-to-click true)
+(put config :tap-button-map :lrm)
+(put config :tap-drag true)
+(put config :tap-drag-lock true)
+(put config :three-finger-drag true)
+(put config :accel-profile :adaptive)
+(put config :natural-scroll true)
+(put config :dwt true)
+(put config :dwtp true)
+(put config :middle-emulation true)
+(put config :click-method :clickfinger)
+(put config :clickfinger-button-map :lrm)
+(put config :scroll-method :two-finger)
+(put config :rotation 0)
+```
 
-## Troubleshooting
+注意：
 
-### Black Screen / River Doesn’t Start
+- `three-finger-drag` 是“三指拖拽模拟按住左键”，不是三指手势切工作区。
+- 它只有设备和 River/libinput 协议都报告支持时才会生效。
+- `scroll-button-lock` 只对 `:scroll-method :on-button-down` 有意义；当前使用双指滚动，所以默认不启用。
 
-- Check that Wayland is available: `echo $WAYLAND_DISPLAY`
-- Verify `XDG_RUNTIME_DIR` is set and writable.
-- Look at logs: `journalctl --user -b -e | grep -i "river\|rijan\|drm"`
-- If you suspect a DRM issue, try switching to a different VT (`Ctrl+Alt+F2`) and check kernel logs: `dmesg | tail -20`
+## libinput 协议
 
-### Keybindings Don’t Work
+当前源码启用了：
 
-- Ensure Rijan loaded correctly. Check `journalctl --user -b -e | grep rijan`.
-- Verify your `init.janet` is in the right place (`~/.config/rijan/`).
-- Make sure the `Mod4` key is recognized (try `xev` or `wev` to see key events).
+```text
+river-input-management-v1
+river-libinput-config-v1
+```
 
-### Applications Fail to Launch from `init.janet`
+它们的作用是让 Rijan 可以在运行时给输入设备下发 libinput 配置，例如：
 
-- The `init.janet` script runs as a background shell. Check its output: `journalctl --user -b -e | grep -A2 -B2 "swww\|waybar\|dunst"`
-- Ensure the programs are installed and in your `$PATH`.
-- The script uses `pgrep -x … || … &` to avoid duplicates, but if a process dies immediately, you might need to debug its own logs.
+- tap-to-click
+- tap-drag
+- drag-lock
+- three-finger-drag
+- accel-profile
+- natural-scroll
+- click-method
+- middle-emulation
+- scroll-method
+- dwt / dwtp
+- rotation
 
-### REPL Connection Fails
+Rijan 不会盲目设置所有选项。设备上报支持后，才会应用对应配置。
 
-- Confirm Rijan is running (`ps aux | grep rijan`).
-- The socket path is `$XDG_RUNTIME_DIR/rijan-$WAYLAND_DISPLAY`. Make both variables are set in the shell where you run the REPL client.
+## Rules DSL
 
----
+rules 写在 `init.janet`：
 
-## Links
+```janet
+(array/push
+  (config :rules)
+  [:title "~Picture-in-Picture" {:float true :sticky true}]
+  [:title "~画中画" {:float true :sticky true}])
+```
 
-- [River compositor](https://codeberg.org/river/river)
-- [Original Rijan](https://codeberg.org/ifreund/rijan)
-- [This fork](https://github.com/1ces0ul/config-river.0.4.0-dev)
-- [Janet language](https://janet-lang.org/)
+格式是：
 
-*Happy tiling!*
+```janet
+[matcher pattern actions]
+```
+
+`matcher` 支持：
+
+- `:app-id`
+- `:title`
+
+`pattern` 规则：
+
+- 普通字符串：精确匹配。
+- 以 `~` 开头：子串包含匹配。
+
+重要：这里不是 regex，也不是 PEG。`~Picture-in-Picture` 的意思是“标题里包含 Picture-in-Picture”，特殊字符不会按正则解释。
+
+`actions` 支持：
+
+```janet
+{:tag 2}
+{:float true}
+{:sticky true}
+{:fullscreen true}
+```
+
+当前源码对每条 rule 单独 `protect`。坏 rule 只会打印：
+
+```text
+rule error: ...
+```
+
+不会打断新窗口管理流程，也不会导致 terminal 出现但拿不到焦点。
+
+## 焦点系统
+
+当前焦点逻辑被拆成几个小函数：
+
+- `seat/resolve-focus-target`：决定应该聚焦谁。
+- `seat/apply-focus`：实际调用 compositor 聚焦窗口。
+- `seat/clear-focus`：清空焦点。
+- `seat/focus`：统一处理普通窗口和 layer-shell 焦点。
+- `seat/resolve-focus`：在每轮 manage 中处理新窗口、交互窗口、焦点返回。
+
+这样比原来一大坨 `seat/manage` 更容易维护。
+
+### waybar 焦点修复
+
+waybar 属于 layer-shell。点击 waybar 之后，compositor 可能把键盘焦点交给 layer surface，导致 terminal 看起来还是 focused，但打不了字。
+
+当前修复逻辑在 `:non-exclusive` layer focus 分支里：
+
+```janet
+(when-let [focused (seat :focused)]
+  (:focus-window (seat :obj) (focused :obj)))
+```
+
+意思是：如果 waybar 这类 non-exclusive layer 交互结束后，Rijan 仍然认为某个窗口是当前 focused，就主动把 compositor 键盘焦点重新交还给这个窗口。
+
+## 子窗口和弹窗
+
+当前源码会识别：
+
+- 正常 top-level window
+- 有真实 parent 的 transient window
+- XWayland client-leader 造成的 parent event 但 parent 为 nil 的窗口
+- popup-like child window
+
+子窗口行为：
+
+- 默认 floating。
+- 尽量跟随 parent 的 tag。
+- 不轻易抢走主窗口焦点。
+- 关闭后尽量把焦点返回 parent。
+- 如果没有真实 parent，会用 app-id 寻找 logical parent，并居中到父窗口附近。
+
+这主要是为了处理微信、登录框、文件选择器、XWayland 弹窗等复杂场景。
+
+## 布局系统
+
+当前支持：
+
+- `:tile`
+- `:scroller`
+- `:grid`
+- `:monocle`
+
+切换快捷键：
+
+```text
+Mod4 + Alt + t    tile
+Mod4 + Alt + s    scroller
+Mod4 + Alt + g    grid
+Mod4 + Alt + m    monocle
+Mod4 + Alt + Tab  previous layout
+```
+
+### Tile
+
+master-stack 布局，支持方向：
+
+```text
+Mod4 + Alt + h    master left
+Mod4 + Alt + l    master right
+Mod4 + Alt + k    master top
+Mod4 + Alt + j    master bottom
+```
+
+### Scroller
+
+类似 PaperWM/niri：当前 focused window 是主窗口，左右邻居向外展开，超出屏幕的窗口会隐藏。
+
+默认宽度：
+
+```janet
+(put config :scroller-mfact 0.65)
+```
+
+调整当前窗口宽度：
+
+```text
+Mod4 + Shift + l    +0.05
+Mod4 + Shift + h    -0.05
+```
+
+当前修复后，第一次调整会从 `:scroller-mfact` 起算，而不是从 `:main-ratio` 起算。
+
+### Grid
+
+自动根据窗口数量计算行列，最后一行会居中。
+
+### Monocle
+
+所有 tiled window 占满可用区域。
+
+## 浮动窗口操作
+
+鼠标：
+
+```text
+Mod4 + left-click   move
+Mod4 + right-click  resize
+```
+
+键盘移动：
+
+```text
+Mod4 + Ctrl + Shift + h/j/k/l
+```
+
+键盘缩放：
+
+```text
+Mod4 + Alt + Shift + h/j/k/l
+```
+
+边缘吸附：
+
+```text
+Mod4 + Alt + Ctrl + h/j/k/l
+```
+
+这些只对 floating window 生效。
+
+## 工作区和窗口操作
+
+基础快捷键：
+
+```text
+Mod4 + t        kitty
+Mod4 + b        qutebrowser
+Mod4 + r        rofi drun
+Mod4 + q        close
+Mod4 + space    zoom
+Mod4 + f        fullscreen
+Mod4 + Alt + f  float
+Mod4 + Shift+r  retile
+```
+
+焦点：
+
+```text
+Mod4 + p / n    previous / next window
+Mod4 + k / j    previous / next output
+```
+
+窗口交换：
+
+```text
+Mod4 + Shift + j/k
+```
+
+发送窗口到其他输出：
+
+```text
+Mod4 + Ctrl + j/k
+```
+
+Sticky：
+
+```text
+Mod4 + Ctrl + s
+```
+
+Tags：
+
+```text
+Mod4 + 1..9               focus tag
+Mod4 + Alt + 1..9         move window to tag
+Mod4 + Alt + Shift + 1..9 toggle tag
+Mod4 + 0                  show all tags
+```
+
+## 错误处理
+
+核心 manage/render loop 被 `protect` 包住：
+
+```text
+wm/manage error: ...
+wm/render error: ...
+```
+
+作用：某个半初始化 XWayland 窗口或坏 rule 报错时，尽量不让整个 WM 死掉。
+
+但这不是让错误“消失”。它只是保证 Rijan 还能继续工作。真正出错仍然应该修配置或源码。
+
+## REPL 调试
+
+Rijan 启动后会创建 netrepl socket：
+
+```text
+$XDG_RUNTIME_DIR/rijan-$WAYLAND_DISPLAY
+```
+
+连接：
+
+```bash
+janet -e '(import spork/netrepl) (netrepl/client :unix (string (os/getenv "XDG_RUNTIME_DIR") "/rijan-" (os/getenv "WAYLAND_DISPLAY")))'
+```
+
+常用检查：
+
+```janet
+(wm :windows)
+(wm :outputs)
+(each output (wm :outputs) (print (output :layout)))
+(each seat (wm :seats) (print (seat :focused)))
+```
+
+不要随便在 REPL 里 `(os/exit)` 或破坏 `wm` 表，除非你准备重启图形会话。
+
+## 故障排查
+
+### 黑屏
+
+优先检查 `init.janet` 语法：
+
+```bash
+janet -e '(parse-all (slurp "init.janet"))'
+```
+
+如果是刚改输入设备配置后黑屏，先注释掉这些高风险项测试：
+
+```janet
+(put config :click-method :clickfinger)
+(put config :scroll-method :two-finger)
+```
+
+某些设备/协议组合可能不支持特定 libinput 设置。
+
+### terminal 打开但不能输入
+
+常见原因是焦点丢失。当前源码已经修了 waybar non-exclusive layer 后的 focus reassert。如果仍出现，检查：
+
+- 是否点了某个 layer-shell 程序后发生。
+- journal/tty 是否有 `wm/manage error` 或 `rule error`。
+- rules 是否写错。
+
+### Picture-in-Picture rule 不生效
+
+确认标题包含：
+
+```text
+Picture-in-Picture
+```
+
+或者中文：
+
+```text
+画中画
+```
+
+rules 现在是子串匹配，不是正则。
+
+### F5 后自启动没有重新跑
+
+这是设计行为。`Mod4+Shift+F5` 只重载 Rijan 配置，不重复启动 waybar、dunst、wallpaper、swayidle。
+
+如果你确实想手动重启 waybar，可以用：
+
+```text
+Mod4 + Shift + b
+```
+
+当前绑定会尝试：
+
+```bash
+pkill -USR1 waybar || waybar ...
+```
+
+### Zig 0.16 编译失败
+
+这是预期问题。当前依赖还没适配 Zig 0.16。使用：
+
+```bash
+./scripts/ensure-zig-0.15.sh
+makepkg -Csf --holdver
+```
+
+如果 pacman 升级后又变回 Zig 0.16，可以在 `/etc/pacman.conf` 加：
+
+```ini
+IgnorePkg = zig
+```
+
+## 当前设计原则
+
+这个 fork 的重点不是把 Rijan 变成一个庞大的桌面环境，而是保持 Janet 可读、可热重载，同时补足日用窗口管理必需功能。
+
+核心原则：
+
+- `init.janet` 管用户配置。
+- `rijan.janet.patched` 管窗口管理逻辑。
+- 自启动只在首次登录执行。
+- 热重载必须干净、可回滚。
+- rules 错误不能影响新窗口焦点。
+- layer-shell 不应该让 terminal 永久丢键盘焦点。
+- 输入设备配置只在设备报告支持时应用。
+- 路径从 `$HOME` 推导，不写死用户名。
