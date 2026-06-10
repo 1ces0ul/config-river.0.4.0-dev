@@ -57,7 +57,7 @@ River 启动后加载 Rijan。Rijan 启动时会读取：
 3. 按键绑定
 4. 首次启动序列
 
-路径统一从 `$HOME` 推导，不再硬编码 `/home/icesoul`：
+路径统一从 `$HOME` 推导，不再硬编码 `/home/xxx`：
 
 ```janet
 (def- home (os/getenv "HOME"))
